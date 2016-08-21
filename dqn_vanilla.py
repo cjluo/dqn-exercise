@@ -22,14 +22,16 @@ flags.DEFINE_integer('resized_height', 84, 'Scale screen to this height.')
 flags.DEFINE_integer('agent_history_length', 4,
                      'Use this number of recent screens as the environment'
                      'state.')
-flags.DEFINE_boolean('display', False,
+flags.DEFINE_boolean('display', True,
                      'Whether to do display the game screen or not')
 
 flags.DEFINE_integer('tmax', int(50 * 1e4), 'Number of training timesteps.')
-flags.DEFINE_float('learning_rate', 0.0001, 'Initial learning rate.')
+flags.DEFINE_float('learning_rate', 0.00025, 'Initial learning rate.')
 flags.DEFINE_float('gamma', 0.99, 'Reward discount rate.')
+flags.DEFINE_integer('train_frequency', 4, 'Train mini-batch after # of steps.')
 
-flags.DEFINE_float('start_ep', 0.5, 'Start ep for exploring')
+
+flags.DEFINE_float('start_ep', 1, 'Start ep for exploring')
 flags.DEFINE_float('end_ep', 0.1, 'End ep for exploring')
 flags.DEFINE_float('end_ep_t', 1 * 1e4, 'Steps to decay ep')
 
@@ -128,8 +130,11 @@ class DQN(object):
         step_count = 0
         q_max_sum = 0
         episode = 0
+        loss = -1
         self._env.new_game()
+        episode_time = time.time()
         record_time = time.time()
+        t_terminal = 0
         for t in xrange(FLAGS.tmax):
             action, q_max = self._e_greedy(
                 session, self._env.get_frame_history(), t)
@@ -139,7 +144,9 @@ class DQN(object):
             q_max_sum += q_max
             step_count += 1
 
-            loss = self._train_q_network(session)
+            if t % FLAGS.train_frequency == 0:
+                loss = self._train_q_network(session)
+
             if t % FLAGS.checkpoint_interval == 0:
                 saver.save(
                     session,
@@ -147,22 +154,31 @@ class DQN(object):
                     global_step=t)
 
             if terminal:
+                new_episode_time = time.time()
+                steps_per_sec = (
+                    t - t_terminal) / (new_episode_time - episode_time)
                 print(
-                    "Episode %d: time=%d total_reward=%d q_max_avg=%f loss=%f"
-                    % (episode, t, total_reward, q_max_sum / step_count,
-                       loss))
+                    "Episode %d (%f steps/sec): step=%d total_reward=%d "
+                    "q_max_avg=%f loss=%f"
+                    % (episode, steps_per_sec, t, total_reward,
+                       q_max_sum / step_count, loss))
                 self._update_summary(
                     session, total_reward, q_max_sum / step_count, loss)
+
+                episode_time = new_episode_time
+                t_terminal = t
+
                 episode += 1
                 total_reward = 0
                 step_count = 0
                 q_max_sum = 0
+                loss = -1
                 self._env.new_game()
 
             now_time = time.time()
             if now_time - record_time > FLAGS.summary_interval:
                 summary = session.run(self._summary_op)
-                writer.add_summary(summary)
+                writer.add_summary(summary, float(t))
                 record_time = now_time
 
 
