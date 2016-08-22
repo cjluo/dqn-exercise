@@ -1,7 +1,7 @@
 import tensorflow as tf
 from keras.layers import Convolution2D, Flatten, Dense, Input
 from keras.models import Model
-import os
+
 
 class QNetwork(object):
     def __init__(self, num_actions, agent_history_length, resized_width,

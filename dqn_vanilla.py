@@ -22,13 +22,14 @@ flags.DEFINE_integer('resized_height', 84, 'Scale screen to this height.')
 flags.DEFINE_integer('agent_history_length', 4,
                      'Use this number of recent screens as the environment'
                      'state.')
-flags.DEFINE_boolean('display', True,
+flags.DEFINE_boolean('display', False,
                      'Whether to do display the game screen or not')
 
 flags.DEFINE_integer('tmax', int(50 * 1e4), 'Number of training timesteps.')
-flags.DEFINE_float('learning_rate', 0.00025, 'Initial learning rate.')
+flags.DEFINE_float('learning_rate', 0.0001, 'Initial learning rate.')
 flags.DEFINE_float('gamma', 0.99, 'Reward discount rate.')
-flags.DEFINE_integer('train_frequency', 4, 'Train mini-batch after # of steps.')
+flags.DEFINE_integer('train_frequency', 4,
+                     'Train mini-batch after # of steps.')
 
 
 flags.DEFINE_float('start_ep', 1, 'Start ep for exploring')
@@ -93,13 +94,13 @@ class DQN(object):
 
         if random.random() < ep:
             action = random.randrange(self._env.action_size)
-            q_max = -1
+            q_max = 0
         else:
             q = self._q_network.eval(session, [state])[0]
             action = np.argmax(q)
             q_max = q[action]
 
-        return action, q_max
+        return action, q_max, ep
 
     def _setup_summary(self):
         reward = tf.Variable(0.)
@@ -108,15 +109,17 @@ class DQN(object):
         tf.scalar_summary("Max Q Value", max_q_avg)
         loss = tf.Variable(0.)
         tf.scalar_summary("Loss", loss)
-        summary_vars = [reward, max_q_avg, loss]
+        ep = tf.Variable(0.)
+        tf.scalar_summary("Epsilon", ep)
+        summary_vars = [reward, max_q_avg, loss, ep]
         self._summary_placeholders = [
             tf.placeholder("float")] * len(summary_vars)
         self._update_ops = [summary_vars[i].assign(
             self._summary_placeholders[i]) for i in range(len(summary_vars))]
         self._summary_op = tf.merge_all_summaries()
 
-    def _update_summary(self, session, reward, max_q_avg, loss):
-        summary_values = [reward, max_q_avg, loss]
+    def _update_summary(self, session, reward, max_q_avg, loss, ep):
+        summary_values = [reward, max_q_avg, loss, ep]
         for i in range(len(summary_values)):
             session.run(
                 self._update_ops[i],
@@ -127,8 +130,7 @@ class DQN(object):
         session.run(tf.initialize_all_variables())
 
         total_reward = 0
-        step_count = 0
-        q_max_sum = 0
+        q_max_list = []
         episode = 0
         loss = -1
         self._env.new_game()
@@ -136,13 +138,13 @@ class DQN(object):
         record_time = time.time()
         t_terminal = 0
         for t in xrange(FLAGS.tmax):
-            action, q_max = self._e_greedy(
-                session, self._env.get_frame_history(), t)
+            action, q_max, ep = self._e_greedy(
+                session, self._env.get_frames(), t)
             _, reward, terminal, _ = self._env.step(action)
 
             total_reward += reward
-            q_max_sum += q_max
-            step_count += 1
+            if q_max != 0:
+                q_max_list.append(q_max)
 
             if t % FLAGS.train_frequency == 0:
                 loss = self._train_q_network(session)
@@ -157,21 +159,23 @@ class DQN(object):
                 new_episode_time = time.time()
                 steps_per_sec = (
                     t - t_terminal) / (new_episode_time - episode_time)
+
+                q_max = np.mean(q_max_list)
+
                 print(
                     "Episode %d (%f steps/sec): step=%d total_reward=%d "
-                    "q_max_avg=%f loss=%f"
+                    "q_max_avg=%f loss=%f ep=%f "
                     % (episode, steps_per_sec, t, total_reward,
-                       q_max_sum / step_count, loss))
+                       q_max, loss, ep))
                 self._update_summary(
-                    session, total_reward, q_max_sum / step_count, loss)
+                    session, total_reward, q_max, loss, ep)
 
                 episode_time = new_episode_time
                 t_terminal = t
 
                 episode += 1
                 total_reward = 0
-                step_count = 0
-                q_max_sum = 0
+                q_max_list = []
                 loss = -1
                 self._env.new_game()
 
