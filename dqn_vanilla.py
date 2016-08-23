@@ -22,7 +22,7 @@ flags.DEFINE_integer('resized_height', 84, 'Scale screen to this height.')
 flags.DEFINE_integer('agent_history_length', 4,
                      'Use this number of recent screens as the environment'
                      'state.')
-flags.DEFINE_boolean('display', True,
+flags.DEFINE_boolean('display', False,
                      'Whether to do display the game screen or not')
 
 flags.DEFINE_integer('tmax', int(300 * 1e4), 'Number of training timesteps.')
@@ -68,6 +68,7 @@ class DQN(object):
             FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate)
 
         self._setup_summary()
+        self._setup_global_step()
 
         if not os.path.exists(FLAGS.checkpoint_dir):
             os.makedirs(FLAGS.checkpoint_dir)
@@ -106,6 +107,9 @@ class DQN(object):
 
         return action, q_max, ep
 
+    def _setup_global_step(self):
+        self._global_step = tf.Variable(0, name='global_step', trainable=False)
+
     def _setup_summary(self):
         reward = tf.Variable(0., trainable=False)
         tf.scalar_summary("Episode Reward", reward)
@@ -130,23 +134,26 @@ class DQN(object):
                 feed_dict={
                     self._summary_placeholders[i]: float(summary_values[i])})
 
-    def load_model(self, session, saver):
+    def load_model(self, session):
         print("Loading checkpoints...")
 
         ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
         if ckpt and ckpt.model_checkpoint_path:
             ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
             fname = os.path.join(FLAGS.checkpoint_dir, ckpt_name)
+            # Only restore saved variables
+            reader = tf.train.NewCheckpointReader(fname)
+            save_var_map = reader.get_variable_to_shape_map()
+            all_var_map = tf.all_variables()
+            restore_var_list = [variable for variable in all_var_map
+                                if variable.name.split(':')[0] in save_var_map]
+            saver = tf.train.Saver(restore_var_list)
             saver.restore(session, fname)
             print("Load SUCCESS: %s" % fname)
-            return True
         else:
             print("Load FAILED: %s" % self.checkpoint_dir)
-            return False
 
     def train(self, session, saver, writer):
-        session.run(tf.initialize_all_variables())
-
         total_reward = 0
         q_max_list = []
         episode = 0
@@ -155,7 +162,11 @@ class DQN(object):
         episode_time = time.time()
         record_time = time.time()
         t_terminal = 0
-        for t in xrange(FLAGS.tmax):
+
+        t_start = self._global_step.eval(session=session)
+        print("Training started with global step %d" % t_start)
+
+        for t in xrange(t_start, FLAGS.tmax):
             action, q_max, ep = self._e_greedy(
                 session, self._env.get_frames(), t)
             _, reward, terminal, _ = self._env.step(action)
@@ -168,10 +179,11 @@ class DQN(object):
                 loss = self._train_q_network(session)
 
             if t % FLAGS.checkpoint_interval == 0:
+                self._global_step.assign(t).eval(session=session)
                 saver.save(
                     session,
                     FLAGS.checkpoint_dir + "/" + FLAGS.experiment + ".ckpt",
-                    global_step=t)
+                    global_step=self._global_step)
 
             if terminal:
                 new_episode_time = time.time()
@@ -233,10 +245,10 @@ def main(_):
         K.set_session(session)
         saver = tf.train.Saver()
         writer = tf.train.SummaryWriter(FLAGS.summary_dir, session.graph)
-        has_model = dqn.load_model(session, saver)
+        session.run(tf.initialize_all_variables())
+        dqn.load_model(session)
         if FLAGS.play:
-            if has_model:
-                dqn.play(session)
+            dqn.play(session)
         else:
             dqn.train(session, saver, writer)
 
