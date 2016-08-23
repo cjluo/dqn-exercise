@@ -22,10 +22,10 @@ flags.DEFINE_integer('resized_height', 84, 'Scale screen to this height.')
 flags.DEFINE_integer('agent_history_length', 4,
                      'Use this number of recent screens as the environment'
                      'state.')
-flags.DEFINE_boolean('display', False,
+flags.DEFINE_boolean('display', True,
                      'Whether to do display the game screen or not')
 
-flags.DEFINE_integer('tmax', int(50 * 1e4), 'Number of training timesteps.')
+flags.DEFINE_integer('tmax', int(300 * 1e4), 'Number of training timesteps.')
 flags.DEFINE_float('learning_rate', 0.0001, 'Initial learning rate.')
 flags.DEFINE_float('gamma', 0.99, 'Reward discount rate.')
 flags.DEFINE_integer('train_frequency', 4,
@@ -34,9 +34,9 @@ flags.DEFINE_integer('train_frequency', 4,
 
 flags.DEFINE_float('start_ep', 1, 'Start ep for exploring')
 flags.DEFINE_float('end_ep', 0.1, 'End ep for exploring')
-flags.DEFINE_float('end_ep_t', 1 * 1e4, 'Steps to decay ep')
+flags.DEFINE_float('end_ep_t', 6 * 1e4, 'Steps to decay ep')
 
-flags.DEFINE_integer('replay_size', 1 * 1e4, 'Size of replay memory')
+flags.DEFINE_integer('replay_size', 6 * 1e4, 'Size of replay memory')
 flags.DEFINE_integer('batch_size', 32, 'Size of mini batch')
 
 flags.DEFINE_string('summary_dir', './summaries',
@@ -49,6 +49,10 @@ flags.DEFINE_integer('summary_interval', 5,
 flags.DEFINE_integer('checkpoint_interval', 600,
                      'Checkpoint the model (i.e. save the parameters) every n '
                      'seconds (rounded up to statistics interval.')
+
+flags.DEFINE_boolean('play', False, 'If true, run gym evaluation')
+flags.DEFINE_integer('play_round', 10, 'Rounds to play in evaluation')
+
 
 FLAGS = flags.FLAGS
 
@@ -103,13 +107,13 @@ class DQN(object):
         return action, q_max, ep
 
     def _setup_summary(self):
-        reward = tf.Variable(0.)
+        reward = tf.Variable(0., trainable=False)
         tf.scalar_summary("Episode Reward", reward)
-        max_q_avg = tf.Variable(0.)
+        max_q_avg = tf.Variable(0., trainable=False)
         tf.scalar_summary("Max Q Value", max_q_avg)
-        loss = tf.Variable(0.)
+        loss = tf.Variable(0., trainable=False)
         tf.scalar_summary("Loss", loss)
-        ep = tf.Variable(0.)
+        ep = tf.Variable(0., trainable=False)
         tf.scalar_summary("Epsilon", ep)
         summary_vars = [reward, max_q_avg, loss, ep]
         self._summary_placeholders = [
@@ -125,6 +129,20 @@ class DQN(object):
                 self._update_ops[i],
                 feed_dict={
                     self._summary_placeholders[i]: float(summary_values[i])})
+
+    def load_model(self, session, saver):
+        print("Loading checkpoints...")
+
+        ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+        if ckpt and ckpt.model_checkpoint_path:
+            ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+            fname = os.path.join(FLAGS.checkpoint_dir, ckpt_name)
+            saver.restore(session, fname)
+            print("Load SUCCESS: %s" % fname)
+            return True
+        else:
+            print("Load FAILED: %s" % self.checkpoint_dir)
+            return False
 
     def train(self, session, saver, writer):
         session.run(tf.initialize_all_variables())
@@ -185,6 +203,29 @@ class DQN(object):
                 writer.add_summary(summary, float(t))
                 record_time = now_time
 
+    def play(self, session):
+        total_reward_list = []
+        for episode in xrange(FLAGS.play_round):
+            self._env.new_game()
+            total_reward = 0
+
+            while True:
+                q = self._q_network.eval(
+                    session, [self._env.get_frames()])[0]
+                action = np.argmax(q)
+                _, reward, terminal, _ = self._env.step(action)
+
+                total_reward += reward
+                if terminal:
+                    break
+
+            print("Episode %d: total_reward=%d" % (episode, total_reward))
+            total_reward_list.append(total_reward)
+
+        print("Total round %d: mean_reward=%f, max_reward=%d" % (
+            FLAGS.play_round, np.mean(total_reward_list),
+            np.max(total_reward_list)))
+
 
 def main(_):
     dqn = DQN()
@@ -192,7 +233,12 @@ def main(_):
         K.set_session(session)
         saver = tf.train.Saver()
         writer = tf.train.SummaryWriter(FLAGS.summary_dir, session.graph)
-        dqn.train(session, saver, writer)
+        has_model = dqn.load_model(session, saver)
+        if FLAGS.play:
+            if has_model:
+                dqn.play(session)
+        else:
+            dqn.train(session, saver, writer)
 
 
 if __name__ == "__main__":
