@@ -24,9 +24,9 @@ class QNetwork(object):
         model = Dense(output_dim=256, activation='relu')(model)
         q_values = Dense(
             output_dim=num_actions, activation='linear')(model)
-        q_model = Model(
+        self._q_model = Model(
             input=inputs, output=q_values)
-        self._q_output = q_model(self._state_input)
+        self._q_output = self._q_model(self._state_input)
 
         # Loss
         action_onehot = tf.one_hot(self._action_input, num_actions)
@@ -46,3 +46,15 @@ class QNetwork(object):
             self._action_input: action_batch,
             self._y_input: y_batch})
         return loss_value
+
+    @property
+    def network_params(self):
+        return self._q_model.trainable_weights
+
+    def update_network_params(self, session, source_dqn):
+        target_network_params = self.network_params
+        source_network_params = source_dqn.network_params
+        update_target_network_params = [
+            target_network_params[i].assign(source_network_params[i])
+            for i in range(len(target_network_params))]
+        session.run(update_target_network_params)
