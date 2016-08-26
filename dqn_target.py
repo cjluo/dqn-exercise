@@ -94,12 +94,9 @@ class DQN(object):
         y_batch = []
         q_batch = self._target_q_network.eval(session, current_state_batch)
 
-        for i in xrange(FLAGS.batch_size):
-            if terminal_batch[i]:
-                y_batch.append(reward_batch[i])
-            else:
-                y_batch.append(
-                    reward_batch[i] + FLAGS.gamma * np.max(q_batch[i]))
+        terminal_batch = np.array(terminal_batch, dtype=int)
+        y_batch = reward_batch + FLAGS.gamma * np.multiply(
+            1 - terminal_batch, np.max(q_batch, axis=1))
 
         return self._q_network.train(
             session, prev_state_batch, action_batch, y_batch)

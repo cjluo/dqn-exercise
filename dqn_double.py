@@ -30,7 +30,8 @@ flags.DEFINE_float('learning_rate', 0.0001, 'Initial learning rate.')
 flags.DEFINE_float('gamma', 0.99, 'Reward discount rate.')
 flags.DEFINE_integer('train_frequency', 4,
                      'Train mini-batch after # of steps.')
-
+flags.DEFINE_integer('update_frequency', 5e3,
+                     'Steps between target q network parameter updates')
 
 flags.DEFINE_float('start_ep', 1, 'Start ep for exploring')
 flags.DEFINE_float('end_ep', 0.1, 'End ep for exploring')
@@ -63,7 +64,16 @@ class DQN(object):
                                 FLAGS.resized_height,
                                 FLAGS.agent_history_length, FLAGS.display,
                                 FLAGS.replay_size)
+        # Training Q network:
+        # 1) generate action
+        # 2) value updated in training
         self._q_network = QNetwork(
+            self._env.action_size, FLAGS.agent_history_length,
+            FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate)
+        # Target Q network:
+        # 1) estimate y value
+        # 2) value updated from training Q network
+        self._target_q_network = QNetwork(
             self._env.action_size, FLAGS.agent_history_length,
             FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate)
 
@@ -82,11 +92,14 @@ class DQN(object):
             return
 
         y_batch = []
-        q_batch = self._q_network.eval(session, current_state_batch)
+        action_next_batch = np.argmax(
+            self._q_network.eval(session, current_state_batch), axis=1)
+        q_batch = self._target_q_network.eval(session, current_state_batch)
 
         terminal_batch = np.array(terminal_batch, dtype=int)
+        q_action_batch = q_batch[range(FLAGS.batch_size), action_next_batch]
         y_batch = reward_batch + FLAGS.gamma * np.multiply(
-            1 - terminal_batch, np.max(q_batch, axis=1))
+            1 - terminal_batch, q_action_batch)
 
         return self._q_network.train(
             session, prev_state_batch, action_batch, y_batch)
@@ -174,6 +187,10 @@ class DQN(object):
 
             if t % FLAGS.train_frequency == 0:
                 loss = self._train_q_network(session)
+
+            if t % FLAGS.update_frequency == 0:
+                self._target_q_network.update_network_params(
+                    session, self._q_network)
 
             if t % FLAGS.checkpoint_interval == 0:
                 self._global_step.assign(t).eval(session=session)
