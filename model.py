@@ -1,11 +1,12 @@
 import tensorflow as tf
-from keras.layers import Convolution2D, Flatten, Dense, Input
+import keras.backend as K
+from keras.layers import Convolution2D, Flatten, Dense, Input, Lambda, merge
 from keras.models import Model
-
+from keras.utils.visualize_util import plot
 
 class QNetwork(object):
     def __init__(self, num_actions, agent_history_length, resized_width,
-                 resized_height, learning_rate):
+                 resized_height, learning_rate, dueling=False):
         # Inputs
         self._state_input = tf.placeholder(
             "float",
@@ -21,11 +22,25 @@ class QNetwork(object):
         model = Convolution2D(nb_filter=32, nb_row=4, nb_col=4, subsample=(
             2, 2), activation='relu', border_mode='same')(model)
         model = Flatten()(model)
-        model = Dense(output_dim=256, activation='relu')(model)
-        q_values = Dense(
-            output_dim=num_actions, activation='linear')(model)
+
+        if dueling:
+            state_model = Dense(output_dim=256, activation='relu')(model)
+            action_model = Dense(output_dim=256, activation='relu')(model)
+            state_value = Dense(output_dim=1, activation='linear')(state_model)
+            action_value = Dense(
+                output_dim=num_actions, activation='linear')(action_model)
+            action_value_normalize = Lambda(
+                lambda x: x - K.mean(x, axis=1, keepdims=True))(action_value)
+            q_values = merge(
+                [state_value, action_value_normalize],
+                mode=lambda x: x[1] + x[0], output_shape=lambda x: x[1])
+        else:
+            model = Dense(output_dim=256, activation='relu')(model)
+            q_values = Dense(
+                output_dim=num_actions, activation='linear')(model)
         self._q_model = Model(
             input=inputs, output=q_values)
+        plot(self._q_model, to_file='model.png')
         self._q_output = self._q_model(self._state_input)
 
         # Loss
