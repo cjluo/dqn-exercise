@@ -1,13 +1,11 @@
-import os
-os.environ["KERAS_BACKEND"] = "tensorflow"
-
 from environment_priority import Environment
 from model import QNetwork
 import tensorflow as tf
 import numpy as np
-from keras import backend as K
 import random
 import time
+import sys
+import os
 
 flags = tf.app.flags
 
@@ -60,6 +58,12 @@ flags.DEFINE_integer('play_round', 10, 'Rounds to play in evaluation')
 FLAGS = flags.FLAGS
 
 
+def log_in_line(str):
+    sys.stdout.write(str)
+    sys.stdout.write("\r")
+    sys.stdout.flush()
+
+
 class DQN(object):
     def __init__(self):
         self._env = Environment(FLAGS.game, FLAGS.resized_width,
@@ -70,13 +74,13 @@ class DQN(object):
         # 1) generate action
         # 2) value updated in training
         self._q_network = QNetwork(
-            self._env.action_size, FLAGS.agent_history_length,
+            'online', self._env.action_size, FLAGS.agent_history_length,
             FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate)
         # Target Q network:
         # 1) estimate y value
         # 2) value updated from training Q network
         self._target_q_network = QNetwork(
-            self._env.action_size, FLAGS.agent_history_length,
+            'target', self._env.action_size, FLAGS.agent_history_length,
             FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate)
 
         self._setup_summary()
@@ -212,9 +216,9 @@ class DQN(object):
 
                 q_max = np.mean(q_max_list)
 
-                print(
+                log_in_line(
                     "Episode %d (%f steps/sec): step=%d total_reward=%d "
-                    "q_max_avg=%f loss=%f ep=%f "
+                    "q_max_avg=%f loss=%f ep=%f\r"
                     % (episode, steps_per_sec, t, total_reward,
                        q_max, loss, ep))
                 self._update_summary(
@@ -262,7 +266,6 @@ class DQN(object):
 def main(_):
     dqn = DQN()
     with tf.Session() as session:
-        K.set_session(session)
         saver = tf.train.Saver()
         writer = tf.train.SummaryWriter(FLAGS.summary_dir, session.graph)
         session.run(tf.initialize_all_variables())
