@@ -6,13 +6,15 @@ from collections import deque
 
 class Environment(object):
     def __init__(self, env_name, resized_width, resized_height,
-                 agent_history_length, display, replay_size):
+                 agent_history_length, display, replay_size, alpha):
         self._env = gym.make(env_name)
         self._width = resized_width
         self._height = resized_height
         self._history_length = agent_history_length
         self._display = display
         self._state_buffer = deque(maxlen=replay_size)
+        self._default_priority = 0
+        self._alpha = alpha
 
     @property
     def action_size(self):
@@ -35,7 +37,8 @@ class Environment(object):
             'prev_frames': prev_frames,
             'action': action,
             'reward': np.clip(reward, -1, 1),
-            'terminal': terminal})
+            'terminal': terminal,
+            'priority': self._default_priority})
 
         if self._display:
             self._env.render()
@@ -45,10 +48,22 @@ class Environment(object):
         return cv2.resize(cv2.cvtColor(
             frame, cv2.COLOR_RGB2GRAY) / 255., (self._width, self._height))
 
+    def _get_sample_probability(self):
+        priority = np.zeros(len(self._state_buffer))
+        i = 0
+        for state in self._state_buffer:
+            priority[i] = state['priority']
+            if self._default_priority < priority[i]:
+                self._default_priority = priority[i]
+            i += 1
+
+        probability = np.power(priority + 1e-7, self._alpha)
+        return probability / np.sum(probability)
+
     def sample(self, batch_size):
         buffer_size = len(self._state_buffer)
         if buffer_size < batch_size:
-            return [], [], [], [], []
+            return [], [], [], [], [], []
         else:
             prev_frames_batch = []
             current_frames_batch = []
@@ -56,7 +71,13 @@ class Environment(object):
             reward_batch = []
             terminal_batch = []
 
-            state_batch = np.random.choice(self._state_buffer, batch_size)
+            if self._alpha == 0:
+                state_batch = np.random.choice(
+                    self._state_buffer, batch_size)
+            else:
+                state_batch = np.random.choice(
+                    self._state_buffer, batch_size,
+                    p=self._get_sample_probability())
 
             for state in state_batch:
                 prev_frames_batch.append(state['prev_frames'])
@@ -66,7 +87,7 @@ class Environment(object):
                 terminal_batch.append(state['terminal'])
 
             return prev_frames_batch, action_batch, reward_batch,\
-                current_frames_batch, terminal_batch
+                current_frames_batch, terminal_batch, state_batch
 
     def get_frames(self):
         return list(self._frames)

@@ -37,6 +37,11 @@ flags.DEFINE_float('end_ep_t', 6 * 1e4, 'Steps to decay ep')
 
 flags.DEFINE_integer('replay_size', 6 * 1e4, 'Size of replay memory')
 flags.DEFINE_integer('batch_size', 32, 'Size of mini batch')
+flags.DEFINE_float('alpha', 0, 'Alpha factor in prioritized sampling, '
+                   '0 means equal priority')
+
+flags.DEFINE_boolean('double', True, 'Double DQN training')
+flags.DEFINE_boolean('dueling', True, 'Dueling DQN training')
 
 flags.DEFINE_string('summary_dir', './summaries',
                     'Directory for storing tensorboard summaries')
@@ -67,19 +72,21 @@ class DQN(object):
         self._env = Environment(FLAGS.game, FLAGS.resized_width,
                                 FLAGS.resized_height,
                                 FLAGS.agent_history_length, FLAGS.display,
-                                FLAGS.replay_size)
+                                FLAGS.replay_size, FLAGS.alpha)
         # Training Q network:
         # 1) generate action
         # 2) value updated in training
         self._q_network = QNetwork(
             'online', self._env.action_size, FLAGS.agent_history_length,
-            FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate)
+            FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate,
+            FLAGS.dueling)
         # Target Q network:
         # 1) estimate y value
         # 2) value updated from training Q network
         self._target_q_network = QNetwork(
             'target', self._env.action_size, FLAGS.agent_history_length,
-            FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate)
+            FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate,
+            FLAGS.dueling)
 
         self._setup_summary()
         self._setup_global_step()
@@ -91,16 +98,32 @@ class DQN(object):
 
     def _train_q_network(self, session):
         prev_state_batch, action_batch, reward_batch, current_state_batch,\
-            terminal_batch = self._env.sample(FLAGS.batch_size)
+            terminal_batch, sample_batch = self._env.sample(FLAGS.batch_size)
         if len(prev_state_batch) == 0:
             return
 
         y_batch = []
         q_batch = self._target_q_network.eval(session, current_state_batch)
-
         terminal_batch = np.array(terminal_batch, dtype=int)
-        y_batch = reward_batch + FLAGS.gamma * np.multiply(
-            1 - terminal_batch, np.max(q_batch, axis=1))
+
+        if FLAGS.double:
+            action_next_batch = np.argmax(
+                self._q_network.eval(session, current_state_batch), axis=1)
+            q_action_batch = q_batch[range(FLAGS.batch_size),
+                                     action_next_batch]
+            y_batch = reward_batch + FLAGS.gamma * np.multiply(
+                1 - terminal_batch, q_action_batch)
+        else:
+            y_batch = reward_batch + FLAGS.gamma * np.multiply(
+                1 - terminal_batch, np.max(q_batch, axis=1))
+
+        if FLAGS.alpha is not 0:
+            # Updates priority
+            priority = np.absolute(np.max(q_batch, axis=1) - y_batch)
+            i = 0
+            for sample in sample_batch:
+                sample['priority'] = priority[i]
+                i += 1
 
         return self._q_network.train(
             session, prev_state_batch, action_batch, y_batch)
