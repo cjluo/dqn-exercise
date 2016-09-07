@@ -35,7 +35,7 @@ flags.DEFINE_float('start_ep', 1, 'Start ep for exploring')
 flags.DEFINE_float('end_ep', 0.1, 'End ep for exploring')
 flags.DEFINE_float('end_ep_t', 6 * 1e4, 'Steps to decay ep')
 
-flags.DEFINE_integer('replay_size', 6 * 1e4, 'Size of replay memory')
+flags.DEFINE_integer('replay_size', int(6 * 1e4), 'Size of replay memory')
 flags.DEFINE_integer('batch_size', 32, 'Size of mini batch')
 flags.DEFINE_float('alpha', 0, 'Alpha factor in prioritized sampling, '
                    '0 means equal priority')
@@ -200,6 +200,15 @@ class DQN(object):
         t_start = self._global_step.eval(session=session)
         print("Training started with global step %d" % t_start)
 
+        # Fill in the initial replay buffer
+        for t in xrange(FLAGS.replay_size):
+            action, _, _ = self._e_greedy(session, self._env.get_frames(), t)
+            _, _, terminal, _ = self._env.step(action)
+            if terminal:
+                self._env.new_game()
+                log_in_line("Fill in replay buffer %d percent..."
+                            % (t * 100 / FLAGS.replay_size))
+
         for t in xrange(t_start, FLAGS.tmax):
             action, q_max, ep = self._e_greedy(
                 session, self._env.get_frames(), t)
@@ -232,7 +241,7 @@ class DQN(object):
 
                 log_in_line(
                     "Episode %d (%f steps/sec): step=%d total_reward=%d "
-                    "q_max_avg=%f loss=%f ep=%f\r"
+                    "q_max_avg=%f loss=%f ep=%f"
                     % (episode, steps_per_sec, t, total_reward,
                        q_max, loss, ep))
                 self._update_summary(
