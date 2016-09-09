@@ -6,12 +6,12 @@ from collections import deque
 
 class Environment(object):
     def __init__(self, env_name, resized_width, resized_height,
-                 agent_history_length, display, replay_size, alpha):
+                 agent_history_length, replay_size, alpha):
         self._env = gym.make(env_name)
         self._width = resized_width
         self._height = resized_height
         self._history_length = agent_history_length
-        self._display = display
+        self._replay_size = replay_size
         self._state_buffer = deque(maxlen=replay_size)
         self._default_priority = 0
         self._alpha = alpha
@@ -27,22 +27,25 @@ class Environment(object):
     def step(self, action):
         frame, reward, terminal, info = self._env.step(action)
         frame = self._process_frame(frame)
+        reward = np.clip(reward, -1, 1)
 
         prev_frames = self._frames
         frames = prev_frames[1:] + [frame]
         self._frames = frames
 
-        self._state_buffer.append({
-            'frames': frames,
-            'prev_frames': prev_frames,
-            'action': action,
-            'reward': np.clip(reward, -1, 1),
-            'terminal': terminal,
-            'priority': self._default_priority})
+        if self._replay_size > 0:
+            self._state_buffer.append({
+                'frames': frames,
+                'prev_frames': prev_frames,
+                'action': action,
+                'reward': reward,
+                'terminal': terminal,
+                'priority': self._default_priority})
 
-        if self._display:
-            self._env.render()
         return list(frames), reward, terminal, info
+
+    def render(self):
+        self._env.render()
 
     def _process_frame(self, frame):
         return cv2.resize(cv2.cvtColor(
@@ -61,6 +64,9 @@ class Environment(object):
         return probability / np.sum(probability)
 
     def sample(self, batch_size):
+        if self._replay_size < 0:
+            raise Exception('replay_size = 0!')
+
         buffer_size = len(self._state_buffer)
         if buffer_size < batch_size:
             return [], [], [], [], [], []

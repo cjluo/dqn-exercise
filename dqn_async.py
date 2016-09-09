@@ -6,6 +6,9 @@ import random
 import time
 import sys
 import os
+from threading import Thread, Lock
+from collections import deque
+
 
 flags = tf.app.flags
 
@@ -23,22 +26,16 @@ flags.DEFINE_integer('agent_history_length', 4,
 flags.DEFINE_boolean('display', False,
                      'Whether to do display the game screen or not')
 
-flags.DEFINE_integer('tmax', int(300 * 1e4), 'Number of training timesteps.')
+flags.DEFINE_integer('tmax', int(1e7), 'Number of training timesteps.')
 flags.DEFINE_float('learning_rate', 0.0001, 'Initial learning rate.')
 flags.DEFINE_float('gamma', 0.99, 'Reward discount rate.')
-flags.DEFINE_integer('train_frequency', 4,
-                     'Train mini-batch after # of steps.')
-flags.DEFINE_integer('update_frequency', 5e3,
+flags.DEFINE_integer('update_frequency', 1e4,
                      'Steps between target q network parameter updates')
 
 flags.DEFINE_float('start_ep', 1, 'Start ep for exploring')
-flags.DEFINE_float('end_ep', 0.1, 'End ep for exploring')
-flags.DEFINE_float('end_ep_t', 6 * 1e4, 'Steps to decay ep')
+flags.DEFINE_float('end_ep_t', 8e5, 'Steps to decay ep')
 
-flags.DEFINE_integer('replay_size', int(6 * 1e4), 'Size of replay memory')
-flags.DEFINE_integer('batch_size', 32, 'Size of mini batch')
-flags.DEFINE_float('alpha', 0, 'Alpha factor in prioritized sampling, '
-                   '0 means equal priority')
+flags.DEFINE_integer('async_update', 32, 'Frequency of async update')
 
 flags.DEFINE_boolean('double', True, 'Double DQN training')
 flags.DEFINE_boolean('dueling', True, 'Dueling DQN training')
@@ -56,6 +53,8 @@ flags.DEFINE_integer('print_interval', 10,
 flags.DEFINE_boolean('play', False, 'If true, run gym evaluation')
 flags.DEFINE_integer('play_round', 10, 'Rounds to play in evaluation')
 
+flags.DEFINE_integer('thread', 8, 'Training thread count')
+
 
 FLAGS = flags.FLAGS
 
@@ -66,24 +65,60 @@ def log_in_line(str):
     sys.stdout.flush()
 
 
+def sample_final_epsilon():
+    """
+    Sample a final epsilon value to anneal towards from a distribution.
+    These values are specified in section 5.1 of
+    http://arxiv.org/pdf/1602.01783v1.pdf
+    """
+    final_epsilons = np.array([.1, .01, .5])
+    probabilities = np.array([0.4, 0.3, 0.3])
+    return np.random.choice(final_epsilons, 1, p=list(probabilities))[0]
+
+
+class AtomicInt(object):
+    def __init__(self, t):
+        self._lock = Lock()
+        self._t = t
+        self._time = time.time()
+        self._speed = 0
+
+    def get(self):
+        return self._t
+
+    def increment(self):
+        self._lock.acquire()
+        self._t += 1
+        self._lock.release()
+        if self._t % FLAGS.checkpoint_interval == 0:
+            time_now = time.time()
+            self._speed = FLAGS.checkpoint_interval / (time_now - self._time)
+            self._time = time_now
+
+    def get_speed(self):
+        return self._speed
+
+
 class DQN(object):
     def __init__(self):
-        self._env = Environment(FLAGS.game, FLAGS.resized_width,
-                                FLAGS.resized_height,
-                                FLAGS.agent_history_length,
-                                FLAGS.replay_size, FLAGS.alpha)
+        self._envs = [Environment(
+            FLAGS.game, FLAGS.resized_width, FLAGS.resized_height,
+            FLAGS.agent_history_length, 0, 0)
+            for i in range(FLAGS.thread)]
+        self._action_size = self._envs[0].action_size
+
         # Training Q network:
         # 1) generate action
         # 2) value updated in training
         self._q_network = QNetwork(
-            'online', self._env.action_size, FLAGS.agent_history_length,
+            'online', self._action_size, FLAGS.agent_history_length,
             FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate,
             FLAGS.dueling)
         # Target Q network:
         # 1) estimate y value
         # 2) value updated from training Q network
         self._target_q_network = QNetwork(
-            'target', self._env.action_size, FLAGS.agent_history_length,
+            'target', self._action_size, FLAGS.agent_history_length,
             FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate,
             FLAGS.dueling)
         # Target network update has to be exported as an tensorflow op
@@ -99,43 +134,16 @@ class DQN(object):
         if not os.path.exists(FLAGS.summary_dir):
             os.makedirs(FLAGS.summary_dir)
 
-    def _train_q_network(self, session):
-        prev_state_batch, action_batch, reward_batch, current_state_batch,\
-            terminal_batch, sample_batch = self._env.sample(FLAGS.batch_size)
-        if len(prev_state_batch) == 0:
-            return
-
-        y_batch = []
-        q_batch = self._target_q_network.eval(session, current_state_batch)
-        terminal_batch = np.array(terminal_batch, dtype=int)
-
-        if FLAGS.double:
-            action_next_batch = np.argmax(
-                self._q_network.eval(session, current_state_batch), axis=1)
-            q_action_batch = q_batch[range(FLAGS.batch_size),
-                                     action_next_batch]
-            y_batch = reward_batch + FLAGS.gamma * np.multiply(
-                1 - terminal_batch, q_action_batch)
-        else:
-            y_batch = reward_batch + FLAGS.gamma * np.multiply(
-                1 - terminal_batch, np.max(q_batch, axis=1))
-
-        if FLAGS.alpha is not 0:
-            # Updates priority
-            priority = np.absolute(np.max(q_batch, axis=1) - y_batch)
-            i = 0
-            for sample in sample_batch:
-                sample['priority'] = priority[i]
-                i += 1
-
+    def _train_q_network(self, session, prev_state_batch, action_batch,
+                         y_batch):
         return self._q_network.train(
             session, prev_state_batch, action_batch, y_batch)
 
-    def _e_greedy(self, session, state, t):
-        ep = np.interp(t, [0, FLAGS.end_ep_t], [FLAGS.start_ep, FLAGS.end_ep])
+    def _e_greedy(self, session, state, t, end_ep):
+        ep = np.interp(t, [0, FLAGS.end_ep_t], [FLAGS.start_ep, end_ep])
 
         if random.random() < ep:
-            action = random.randrange(self._env.action_size)
+            action = random.randrange(self._action_size)
             q_max = 0
         else:
             q = self._q_network.eval(session, [state])[0]
@@ -190,41 +198,58 @@ class DQN(object):
         else:
             print("Load FAILED: %s" % FLAGS.checkpoint_dir)
 
-    def train(self, session, saver, writer):
+    def _train_thread(self, thread_id, atomic_t, env, session, saver,
+                      writer):
         total_reward = 0
         q_max_list = []
         episode = 0
         loss = -1
-        self._env.new_game()
-        episode_time = time.time()
-        t_terminal = 0
+        thread_t = 0
+        env.new_game()
 
-        t_start = self._global_step.eval(session=session)
-        print("Training started with global step %d" % t_start)
+        prev_state_batch = deque()
+        action_batch = deque()
+        y_batch = deque()
 
-        # Fill in the initial replay buffer with random actions
-        for t in xrange(FLAGS.replay_size):
-            _, _, terminal, _ = self._env.step(np.random.randint(
-                self._env.action_size))
-            if terminal:
-                self._env.new_game()
-                log_in_line("Fill in replay buffer %d percent..."
-                            % (t * 100 / FLAGS.replay_size))
+        end_ep = sample_final_epsilon()
 
-        for t in xrange(t_start, FLAGS.tmax):
-            action, q_max, ep = self._e_greedy(
-                session, self._env.get_frames(), t)
-            _, reward, terminal, _ = self._env.step(action)
+        print("Thread %d starting... final ep %f" % (thread_id, end_ep))
+        time.sleep(0)
 
-            if FLAGS.display:
-                self._env.render()
+        while True:
+            t = atomic_t.get()
+            if t > FLAGS.tmax:
+                break
+
+            prev_state = env.get_frames()
+            action, q_max, ep = self._e_greedy(session, prev_state, t,
+                                               end_ep)
+            current_state, reward, terminal, _ = env.step(action)
 
             total_reward += reward
             if q_max != 0:
                 q_max_list.append(q_max)
 
-            if t % FLAGS.train_frequency == 0:
-                loss = self._train_q_network(session)
+            q = self._target_q_network.eval(session, [current_state])[0]
+
+            if FLAGS.double:
+                action_next = np.argmax(
+                    self._q_network.eval(session, [current_state])[0])
+                q_action = q[action_next]
+                y = reward + FLAGS.gamma * (1 - terminal) * q_action
+            else:
+                y = reward + FLAGS.gamma * (1 - terminal) * np.max(q)
+
+            prev_state_batch.append(prev_state)
+            action_batch.append(action)
+            y_batch.append(y)
+
+            if thread_t % FLAGS.async_update == 0 or terminal:
+                loss = self._train_q_network(
+                    session, prev_state_batch, action_batch, y_batch)
+                prev_state_batch.clear()
+                action_batch.clear()
+                y_batch.clear()
 
             if t % FLAGS.update_frequency == 0:
                 session.run(self._upgrade_network_params_op)
@@ -239,48 +264,67 @@ class DQN(object):
                 writer.add_summary(summary, float(t))
 
             if terminal:
-                new_episode_time = time.time()
-                steps_per_sec = (
-                    t - t_terminal) / (new_episode_time - episode_time)
-
-                q_max = np.mean(q_max_list)
+                q_max = np.mean(q_max_list) if q_max_list else 0
 
                 if episode % FLAGS.print_interval == 0:
                     log_in_line(
-                        "Episode %d (%f steps/sec): step=%d total_reward=%d "
-                        "q_max_avg=%f loss=%f ep=%f"
-                        % (episode, steps_per_sec, t, total_reward,
-                           q_max, loss, ep))
+                        "Thread %d Episode %d (%f steps/sec): step=%d "
+                        "total_reward=%d q_max_avg=%f loss=%f ep=%f"
+                        % (thread_id, episode, atomic_t.get_speed(), t,
+                           total_reward, q_max, loss, ep))
+
                 self._update_summary(
                     session, total_reward, q_max, loss, ep)
-
-                episode_time = new_episode_time
-                t_terminal = t
 
                 episode += 1
                 total_reward = 0
                 q_max_list = []
                 loss = -1
-                self._env.new_game()
+                env.new_game()
+
+            thread_t += 1
+            atomic_t.increment()
+
+    def train(self, session, saver, writer):
+        t_start = self._global_step.eval(session=session)
+        atomic_t = AtomicInt(t_start)
+
+        training_threads = [Thread(
+            target=self._train_thread,
+            args=(
+                thread_id, atomic_t, self._envs[thread_id], session, saver,
+                writer))
+            for thread_id in range(FLAGS.thread)]
+
+        for thread in training_threads:
+            thread.start()
+
+        while atomic_t.get() < FLAGS.tmax:
+            if FLAGS.display:
+                for env in self._envs:
+                    env.render()
+            time.sleep(1)
+
+        for thread in training_threads:
+            thread.join()
 
     def play(self, session):
         total_reward_list = []
         for episode in xrange(FLAGS.play_round):
-            self._env.new_game()
+            env = self._envs[0]
+            env.new_game()
             total_reward = 0
 
             while True:
                 q = self._q_network.eval(
-                    session, [self._env.get_frames()])[0]
+                    session, [env.get_frames()])[0]
                 action = np.argmax(q)
-
-                _, reward, terminal, _ = self._env.step(action)
+                _, reward, terminal, _ = env.step(action)
 
                 if FLAGS.display:
-                    self._env.render()
+                    env.render()
 
                 total_reward += reward
-                print terminal
                 if terminal:
                     break
 

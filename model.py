@@ -69,10 +69,8 @@ class QNetwork(object):
         return tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, self._namespace)
 
-    def update_network_params(self, session, source_dqn):
+    def get_update_network_params_op(self, source_dqn):
         target_network_params = self.network_params
         source_network_params = source_dqn.network_params
-        update_target_network_params = [
-            target_network_params[i].assign(source_network_params[i])
-            for i in range(len(target_network_params))]
-        session.run(update_target_network_params)
+        return [target_network_params[i].assign(source_network_params[i])
+                for i in range(len(target_network_params))]
