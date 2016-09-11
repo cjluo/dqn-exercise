@@ -47,10 +47,7 @@ flags.DEFINE_string('summary_dir', './summaries',
                     'Directory for storing tensorboard summaries')
 flags.DEFINE_string('checkpoint_dir', './checkpoints',
                     'Directory for storing model checkpoints')
-flags.DEFINE_integer('summary_interval', 5,
-                     'Save training summary to file every n seconds (rounded '
-                     'up to statistics interval.')
-flags.DEFINE_integer('checkpoint_interval', 600,
+flags.DEFINE_integer('checkpoint_interval', 5e3,
                      'Checkpoint the model (i.e. save the parameters) every n '
                      'seconds (rounded up to statistics interval.')
 
@@ -194,16 +191,15 @@ class DQN(object):
         loss = -1
         self._env.new_game()
         episode_time = time.time()
-        record_time = time.time()
         t_terminal = 0
 
         t_start = self._global_step.eval(session=session)
         print("Training started with global step %d" % t_start)
 
-        # Fill in the initial replay buffer
+        # Fill in the initial replay buffer with random actions
         for t in xrange(FLAGS.replay_size):
-            action, _, _ = self._e_greedy(session, self._env.get_frames(), t)
-            _, _, terminal, _ = self._env.step(action)
+            _, _, terminal, _ = self._env.step(np.random.randint(
+                self._env.action_size))
             if terminal:
                 self._env.new_game()
                 log_in_line("Fill in replay buffer %d percent..."
@@ -231,6 +227,8 @@ class DQN(object):
                     session,
                     FLAGS.checkpoint_dir + "/" + FLAGS.experiment + ".ckpt",
                     global_step=self._global_step)
+                summary = session.run(self._summary_op)
+                writer.add_summary(summary, float(t))
 
             if terminal:
                 new_episode_time = time.time()
@@ -255,12 +253,6 @@ class DQN(object):
                 q_max_list = []
                 loss = -1
                 self._env.new_game()
-
-            now_time = time.time()
-            if now_time - record_time > FLAGS.summary_interval:
-                summary = session.run(self._summary_op)
-                writer.add_summary(summary, float(t))
-                record_time = now_time
 
     def play(self, session):
         total_reward_list = []
