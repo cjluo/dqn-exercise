@@ -6,7 +6,7 @@ from collections import deque
 
 class Environment(object):
     def __init__(self, env_name, resized_width, resized_height,
-                 agent_history_length, replay_size, alpha, reward_clip=1):
+                 agent_history_length, replay_size, alpha, action_repeat=4):
         self._env = gym.make(env_name)
         self._width = resized_width
         self._height = resized_height
@@ -15,7 +15,8 @@ class Environment(object):
         self._state_buffer = deque(maxlen=replay_size)
         self._default_priority = 0
         self._alpha = alpha
-        self._reward_clip = reward_clip
+        self._action_list = deque()
+        self._action_repeat = action_repeat
 
     @property
     def action_size(self):
@@ -24,13 +25,19 @@ class Environment(object):
     def new_game(self):
         frame = self._process_frame(self._env.reset())
         self._frames = [frame] * self._history_length
+        self._action_list = deque()
 
     def step(self, action):
-        frame, reward, terminal, info = self._env.step(action)
-        frame = self._process_frame(frame)
-        if self._reward_clip > 0:
-            reward = np.clip(reward, -1 * self._reward_clip, self._reward_clip)
+        self._action_list.append(action)
 
+        reward = 0
+        for _ in range(self._action_repeat):
+            frame, reward_action, terminal, info = self._env.step(action)
+            reward += np.clip(reward_action, -1, 1)
+            if terminal:
+                break
+
+        frame = self._process_frame(frame)
         prev_frames = self._frames
         frames = prev_frames[1:] + [frame]
         self._frames = frames
@@ -99,3 +106,6 @@ class Environment(object):
 
     def get_frames(self):
         return list(self._frames)
+
+    def get_action_dist(self):
+        return np.bincount(self._action_list)
