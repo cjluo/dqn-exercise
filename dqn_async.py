@@ -121,10 +121,6 @@ class DQN(object):
             'target', self._action_size, FLAGS.agent_history_length,
             FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate,
             FLAGS.dueling)
-        # Target network update has to be exported as an tensorflow op
-        self._upgrade_network_params_op =\
-            self._target_q_network.get_update_network_params_op(
-                self._q_network)
 
         self._setup_summary()
         self._setup_global_step()
@@ -198,13 +194,15 @@ class DQN(object):
         else:
             print("Load FAILED: %s" % FLAGS.checkpoint_dir)
 
-    def _train_thread(self, thread_id, atomic_t, env, session, saver,
+    def _train_thread(self, thread_id, atomic_t, session, saver,
                       writer):
         total_reward = 0
         q_max_list = []
         episode = 0
         loss = -1
         thread_t = 0
+
+        env = self._envs[thread_id]
         env.new_game()
 
         prev_state_batch = deque()
@@ -256,12 +254,13 @@ class DQN(object):
                 y_batch.clear()
 
             if t % FLAGS.update_frequency == 0:
-                session.run(self._upgrade_network_params_op)
+                self._target_q_network.update_network_params(
+                    session, self._q_network)
 
             if t % FLAGS.checkpoint_interval == 0:
                 try:
                     self._global_step.assign(t).eval(session=session)
-                except tf.errors.NotFoundError:
+                except:
                     print "Count not assign global step!"
 
                 saver.save(
@@ -296,9 +295,7 @@ class DQN(object):
 
         training_threads = [Thread(
             target=self._train_thread,
-            args=(
-                thread_id, atomic_t, self._envs[thread_id], session, saver,
-                writer))
+            args=(thread_id, atomic_t, session, saver, writer))
             for thread_id in range(FLAGS.thread)]
 
         for thread in training_threads:

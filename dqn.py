@@ -86,10 +86,6 @@ class DQN(object):
             'target', self._env.action_size, FLAGS.agent_history_length,
             FLAGS.resized_width, FLAGS.resized_height, FLAGS.learning_rate,
             FLAGS.dueling)
-        # Target network update has to be exported as an tensorflow op
-        self._upgrade_network_params_op =\
-            self._target_q_network.get_update_network_params_op(
-                self._q_network)
 
         self._setup_summary()
         self._setup_global_step()
@@ -227,7 +223,8 @@ class DQN(object):
                 loss = self._train_q_network(session)
 
             if t % FLAGS.update_frequency == 0:
-                session.run(self._upgrade_network_params_op)
+                self._target_q_network.update_network_params(
+                    session, self._q_network)
 
             if t % FLAGS.checkpoint_interval == 0:
                 self._global_step.assign(t).eval(session=session)

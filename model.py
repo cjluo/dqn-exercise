@@ -1,11 +1,13 @@
 import tensorflow as tf
 import tensorflow.contrib.layers as layers
+import threading
 
 
 class QNetwork(object):
     def __init__(self, namespace, num_actions, agent_history_length,
                  resized_width, resized_height, learning_rate, dueling=False):
-        self._namespace = namespace
+        assert isinstance(threading.current_thread(), threading._MainThread)
+
         # Inputs in NHWC format
         self._state_input = tf.placeholder(
             "float",
@@ -52,6 +54,9 @@ class QNetwork(object):
         self._optimizer = tf.train.AdamOptimizer(
             learning_rate).minimize(self._loss)
 
+        self._trainable_variables = tf.get_collection(
+            tf.GraphKeys.TRAINABLE_VARIABLES, namespace)
+
     def eval(self, session, state_batch):
         return self._q_output.eval(
             session=session,
@@ -66,11 +71,11 @@ class QNetwork(object):
 
     @property
     def network_params(self):
-        return tf.get_collection(
-            tf.GraphKeys.TRAINABLE_VARIABLES, self._namespace)
+        return self._trainable_variables
 
-    def get_update_network_params_op(self, source_dqn):
+    def update_network_params(self, session, source_dqn):
         target_network_params = self.network_params
         source_network_params = source_dqn.network_params
-        return [target_network_params[i].assign(source_network_params[i])
-                for i in range(len(target_network_params))]
+        update_op = [target_network_params[i].assign(source_network_params[i])
+                     for i in range(len(target_network_params))]
+        session.run(update_op)
