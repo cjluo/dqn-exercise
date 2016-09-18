@@ -130,11 +130,6 @@ class DQN(object):
         if not os.path.exists(FLAGS.summary_dir):
             os.makedirs(FLAGS.summary_dir)
 
-    def _train_q_network(self, session, prev_state_batch, action_batch,
-                         y_batch):
-        return self._q_network.train(
-            session, prev_state_batch, action_batch, y_batch)
-
     def _e_greedy(self, session, state, t, end_ep):
         ep = np.interp(t, [0, FLAGS.end_ep_t], [FLAGS.start_ep, end_ep])
 
@@ -207,7 +202,7 @@ class DQN(object):
 
         prev_state_batch = deque()
         action_batch = deque()
-        y_batch = deque()
+        reward_t_batch = deque()
 
         end_ep = sample_final_epsilon()
 
@@ -220,38 +215,51 @@ class DQN(object):
                 break
 
             prev_state = env.get_frames()
-            action, q_max, ep = self._e_greedy(session, prev_state, t,
-                                               end_ep)
+            action, q_max, ep = self._e_greedy(session, prev_state, t, end_ep)
             current_state, reward, terminal, _ = env.step(action)
 
             total_reward += reward
             if q_max != 0:
                 q_max_list.append(q_max)
 
-            q = self._target_q_network.eval(session, [current_state])[0]
-
-            if FLAGS.double:
-                action_next = np.argmax(
-                    self._q_network.eval(session, [current_state])[0])
-                q_action = q[action_next]
-                y = reward + FLAGS.gamma * (1 - terminal) * q_action
-            else:
-                y = reward + FLAGS.gamma * (1 - terminal) * np.max(q)
-
             prev_state_batch.append(prev_state)
             action_batch.append(action)
-            y_batch.append(y)
+            reward_t_batch.append(reward)
 
             thread_t += 1
             atomic_t.increment()
 
             if thread_t == FLAGS.async_update or terminal:
+                batch_size = thread_t
                 thread_t = 0
-                loss = self._train_q_network(
-                    session, prev_state_batch, action_batch, y_batch)
-                prev_state_batch.clear()
-                action_batch.clear()
-                y_batch.clear()
+                if batch_size > 0:
+                    if terminal:
+                        reward_final = 0
+                    else:
+                        q = self._target_q_network.eval(
+                            session, [current_state])[0]
+
+                        if FLAGS.double:
+                            action_next = np.argmax(
+                                self._q_network.eval(
+                                    session, [current_state])[0])
+                            q_action = q[action_next]
+                            reward_final = q_action
+                        else:
+                            reward_final = np.max(q)
+
+                    reward_batch = np.zeros(batch_size)
+                    for i in reversed(range(batch_size)):
+                        reward_batch[i] = FLAGS.gamma * reward_final\
+                            + reward_t_batch.pop()
+                        reward_final = reward_batch[i]
+
+                    loss = self._q_network.train(
+                        session, prev_state_batch, action_batch, reward_batch)
+
+                    prev_state_batch.clear()
+                    action_batch.clear()
+                    reward_t_batch.clear()
 
             if t % FLAGS.update_frequency == 0:
                 self._target_q_network.update_network_params(
