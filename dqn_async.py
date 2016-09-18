@@ -244,7 +244,11 @@ class DQN(object):
             action_batch.append(action)
             y_batch.append(y)
 
+            thread_t += 1
+            atomic_t.increment()
+
             if thread_t % FLAGS.async_update == 0 or terminal:
+                thread_t = 0
                 loss = self._train_q_network(
                     session, prev_state_batch, action_batch, y_batch)
                 prev_state_batch.clear()
@@ -255,7 +259,11 @@ class DQN(object):
                 session.run(self._upgrade_network_params_op)
 
             if t % FLAGS.checkpoint_interval == 0:
-                self._global_step.assign(t).eval(session=session)
+                try:
+                    self._global_step.assign(t).eval(session=session)
+                except tf.errors.NotFoundError:
+                    print "Count not assign global step!"
+
                 saver.save(
                     session,
                     FLAGS.checkpoint_dir + "/" + FLAGS.experiment + ".ckpt",
@@ -281,9 +289,6 @@ class DQN(object):
                 q_max_list = []
                 loss = -1
                 env.new_game()
-
-            thread_t += 1
-            atomic_t.increment()
 
     def train(self, session, saver, writer):
         t_start = self._global_step.eval(session=session)
