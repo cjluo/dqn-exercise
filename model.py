@@ -52,10 +52,23 @@ class QNetwork(object):
         q_action = tf.reduce_sum(tf.mul(self._q_output, action_onehot), 1)
         self._loss = tf.nn.l2_loss(q_action - self._y_input)
         self._optimizer = tf.train.AdamOptimizer(
-            learning_rate).minimize(self._loss)
+            learning_rate)
 
         self._trainable_variables = tf.get_collection(
             tf.GraphKeys.TRAINABLE_VARIABLES, namespace)
+
+        grad_var_pairs = self._optimizer.compute_gradients(
+            self._loss, self._trainable_variables)
+
+        self._grad_placeholders = []
+        self._grads_op = []
+        for grad_var in grad_var_pairs:
+            self._grad_placeholders.append(
+                tf.placeholder('float', shape=grad_var[0].get_shape()))
+            self._grads_op.append(grad_var[0])
+
+        self._apply_gradients_op = self._optimizer.apply_gradients(
+            zip(self._grad_placeholders, self._trainable_variables))
 
     def eval(self, session, state_batch):
         return self._q_output.eval(
@@ -63,19 +76,31 @@ class QNetwork(object):
             feed_dict={self._state_input: state_batch})
 
     def train(self, session, state_batch, action_batch, y_batch):
-        _, loss_value = session.run([self._optimizer, self._loss], feed_dict={
+        _, loss_value = session.run(
+            [self._optimizer.minimize(self._loss), self._loss], feed_dict={
+                self._state_input: state_batch,
+                self._action_input: action_batch,
+                self._y_input: y_batch})
+        return loss_value
+
+    def compute_gradients(self, session, state_batch, action_batch, y_batch):
+        return session.run([self._grads_op, self._loss], feed_dict={
             self._state_input: state_batch,
             self._action_input: action_batch,
             self._y_input: y_batch})
-        return loss_value
+
+    def apply_gradients(self, session, grads):
+        feed_dict = {}
+        for i in xrange(len(grads)):
+            feed_dict[self._grad_placeholders[i]] = grads[i]
+        return session.run(self._apply_gradients_op, feed_dict=feed_dict)
 
     @property
     def network_params(self):
         return self._trainable_variables
 
-    def update_network_params(self, session, source_dqn):
+    def get_update_network_params_op(self, source_dqn):
         target_network_params = self.network_params
         source_network_params = source_dqn.network_params
-        update_op = [target_network_params[i].assign(source_network_params[i])
-                     for i in range(len(target_network_params))]
-        session.run(update_op)
+        return [target_network_params[i].assign(source_network_params[i])
+                for i in range(len(target_network_params))]
