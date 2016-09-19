@@ -73,9 +73,10 @@ class QNetwork(object):
     def network_params(self):
         return self._trainable_variables
 
-    def update_network_params(self, session, source_dqn):
+    def get_update_network_params_op(self, source_dqn):
         target_network_params = self.network_params
         source_network_params = source_dqn.network_params
-        update_op = [target_network_params[i].assign(source_network_params[i])
-                     for i in range(len(target_network_params))]
-        session.run(update_op)
+        assert len(target_network_params) > 0
+        assert len(source_network_params) > 0
+        return [target_network_params[i].assign(source_network_params[i])
+                for i in range(len(target_network_params))]
