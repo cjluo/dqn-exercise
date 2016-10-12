@@ -15,7 +15,6 @@ class Environment(object):
         self._state_buffer = deque(maxlen=replay_size)
         self._default_priority = 0
         self._alpha = alpha
-        self._action_list = deque()
         self._action_repeat = action_repeat
 
     @property
@@ -25,11 +24,8 @@ class Environment(object):
     def new_game(self):
         frame = self._process_frame(self._env.reset())
         self._frames = [frame] * self._history_length
-        self._action_list = deque()
 
     def step(self, action):
-        self._action_list.append(action)
-
         reward = 0
         for _ in range(self._action_repeat):
             frame, reward_action, terminal, info = self._env.step(action)
@@ -106,6 +102,3 @@ class Environment(object):
 
     def get_frames(self):
         return list(self._frames)
-
-    def get_action_dist(self):
-        return np.bincount(self._action_list)

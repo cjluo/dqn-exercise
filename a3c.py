@@ -256,10 +256,9 @@ class A3C(object):
                 if episode % FLAGS.print_interval == 0:
                     log_in_line(
                         "Thread %d Episode %d (%f steps/sec): step=%d "
-                        "total_reward=%d p_max_avg=%f v=%f action=%s"
+                        "total_reward=%d p_max_avg=%f v=%f"
                         % (thread_id, episode, atomic_t.get_speed(), t,
-                           total_reward, p_action, v,
-                           str(env.get_action_dist())))
+                           total_reward, p_action, v))
 
                 self._update_summary(session, total_reward, p_action, v)
 

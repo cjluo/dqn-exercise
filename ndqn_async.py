@@ -23,10 +23,10 @@ flags.DEFINE_integer('resized_height', 84, 'Scale screen to this height.')
 flags.DEFINE_integer('agent_history_length', 4,
                      'Use this number of recent screens as the environment'
                      'state.')
+flags.DEFINE_integer('action_repeat', 4, 'Repeat same action for number of'
+                     'frames.')
 flags.DEFINE_boolean('display', False,
                      'Whether to do display the game screen or not')
-flags.DEFINE_float('reward_clip', -1, 'Value of reward clip. -negative means '
-                   'do not clip')
 
 flags.DEFINE_integer('tmax', int(1e7), 'Number of training timesteps.')
 flags.DEFINE_float('learning_rate', 0.0001, 'Initial learning rate.')
@@ -105,7 +105,7 @@ class DQN(object):
     def __init__(self):
         self._envs = [Environment(
             FLAGS.game, FLAGS.resized_width, FLAGS.resized_height,
-            FLAGS.agent_history_length, 0, 0, FLAGS.reward_clip)
+            FLAGS.agent_history_length, 0, 0, FLAGS.action_repeat)
             for i in range(FLAGS.thread)]
         self._action_size = self._envs[0].action_size
 
